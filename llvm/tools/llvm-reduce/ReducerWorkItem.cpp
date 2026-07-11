@@ -39,6 +39,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
+#include "llvm/Transforms/IPO/WholeProgramDevirt.h"
+#include "llvm/Transforms/Utils/AssignGUID.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include <optional>
 
@@ -828,9 +830,9 @@ llvm::parseReducerWorkItem(StringRef ToolName, StringRef Filename,
 
   auto MMM = std::make_unique<ReducerWorkItem>();
 
-  if (IsMIR) {
-    initializeTargetInfo();
+  initializeTargetInfo();
 
+  if (IsMIR) {
     auto FileOrErr = MemoryBuffer::getFileOrSTDIN(Filename, /*IsText=*/true);
     if (std::error_code EC = FileOrErr.getError()) {
       WithColor::error(errs(), ToolName) << EC.message() << '\n';
@@ -886,10 +888,10 @@ llvm::parseReducerWorkItem(StringRef ToolName, StringRef Filename,
     } else {
       IsBitcode = true;
       MMM->readBitcode(MemoryBufferRef(**MB), Ctxt, ToolName);
-
-      if (MMM->LTOInfo->IsThinLTO && MMM->LTOInfo->EnableSplitLTOUnit)
-        initializeTargetInfo();
     }
+
+    if (MMM->LTOInfo)
+      AssignGUIDPass::runOnModule(MMM->getModule());
   }
   if (MMM->verify(&errs())) {
     WithColor::error(errs(), ToolName)
