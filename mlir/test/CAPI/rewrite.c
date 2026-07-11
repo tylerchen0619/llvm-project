@@ -911,9 +911,11 @@ void testTypeConverterSourceMaterialization(MlirContext ctx) {
 
   mlirOperationDump(moduleOp);
   // clang-format off
-  // CHECK: %[[v:.*]] = "test.source_i64"() : () -> i64
-  // CHECK: %[[c:.*]] = "test.cast"(%[[v]]) : (i64) -> i32
-  // CHECK: "test.user"(%[[c]]) : (i32) -> ()
+  // CHECK:      module {
+  // CHECK-NEXT:   %[[v:.*]] = "test.source_i64"() : () -> i64
+  // CHECK-NEXT:   %[[c:.*]] = "test.cast"(%[[v]]) : (i64) -> i32
+  // CHECK-NEXT:   "test.user"(%[[c]]) : (i32) -> ()
+  // CHECK-NEXT: }
   // clang-format on
 
   mlirConversionConfigDestroy(config);
@@ -1000,9 +1002,11 @@ void testTypeConverterTargetMaterialization(MlirContext ctx) {
 
   mlirOperationDump(moduleOp);
   // clang-format off
-  // CHECK: %[[v:.*]] = "test.producer"() : () -> i32
-  // CHECK: %[[c:.*]] = "test.cast"(%[[v]]) : (i32) -> i64
-  // CHECK: "test.consumer_legal"(%[[c]]) : (i64) -> ()
+  // CHECK:      module {
+  // CHECK-NEXT:   %[[v:.*]] = "test.producer"() : () -> i32
+  // CHECK-NEXT:   %[[c:.*]] = "test.cast"(%[[v]]) : (i32) -> i64
+  // CHECK-NEXT:   "test.consumer_legal"(%[[c]]) : (i64) -> ()
+  // CHECK-NEXT: }
   // clang-format on
 
   mlirConversionConfigDestroy(config);
