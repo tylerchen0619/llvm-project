@@ -100,7 +100,9 @@ void *bsearch_caller(void) {
 
   // Test resuming context where VAPI is not active. The VAPI return glue should
   // be used each time without regard for whether the VAPI is currently active.
-  if (++state < 3) {
+
+  // `state` is volatile to observe changes in the value between the multiple returns in `setjmp`/`longjmp`-like usage. We need to spell out the `volatile` accesses very explicitly thanks to changes in the C++ standard.
+  if ((state = state + 1, state) < 3) {
     fprintf(stderr,
             "Return to `bsearch_caller` at the invocation of "
             "`returns_twice_bsearch` (really `bsearch`) with r3 set to "
