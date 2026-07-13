@@ -28,6 +28,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef __64BIT__
+#define R3 UNW_PPC64_R3
+#else
+#define R3 UNW_PPC_R3
+#endif
+
 extern "C" void *returns_twice_bsearch
     [[gnu::returns_twice]] (const void *, const void *, size_t, size_t,
                             int (*)(const void *,
@@ -61,7 +67,7 @@ extern "C" int cmp(const void *pa, const void *pb) {
   // Test resuming context where VAPI is active.
   fprintf(stderr,
           "Return to `bsearch` with r3 set to 0 using the global cursor.\n");
-  unw_set_reg(&bsearch_cursor, UNW_PPC64_R3, (unw_word_t)0);
+  unw_set_reg(&bsearch_cursor, R3, (unw_word_t)0);
   unw_resume(&bsearch_cursor);
 }
 
@@ -81,7 +87,7 @@ void *bsearch_caller(void) {
             "`returns_twice_bsearch` (really `bsearch`) with r3 set to "
             "&buf[%d] using the global cursor.\n",
             state);
-    unw_set_reg(&bsearch_caller_cursor, UNW_PPC64_R3, (unw_word_t)&buf[state]);
+    unw_set_reg(&bsearch_caller_cursor, R3, (unw_word_t)&buf[state]);
     unw_resume(&bsearch_caller_cursor);
   }
 
@@ -89,7 +95,7 @@ void *bsearch_caller(void) {
   // caller.
   fprintf(stderr, "Return to `main` at the invocation of `bsearch_caller` with "
                   "r3 set to `&bsearch_caller_ret` using the global cursor.\n");
-  unw_set_reg(&main_cursor, UNW_PPC64_R3, (unw_word_t)&bsearch_caller_ret);
+  unw_set_reg(&main_cursor, R3, (unw_word_t)&bsearch_caller_ret);
   unw_resume(&main_cursor);
 }
 
