@@ -24,6 +24,7 @@
 // each time, without regard for whether the VAPI is currently active).
 
 #include <assert.h>
+#include <libunwind.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -32,6 +33,10 @@ extern "C" void *returns_twice_bsearch
                             int (*)(const void *,
                                     const void *)) __asm__("bsearch");
 
+static unw_cursor_t bsearch_cursor;
+static unw_cursor_t bsearch_caller_cursor;
+static unw_cursor_t main_cursor;
+
 extern "C" int cmp(const void *pa, const void *pb) {
   (void)pa;
   (void)pb;
@@ -39,12 +44,25 @@ extern "C" int cmp(const void *pa, const void *pb) {
   fprintf(
       stderr,
       "Populate global cursors for `bsearch`, `bsearch_caller`, and `main`.\n");
-  // TODO
+  unw_context_t context;
+  unw_cursor_t cursor;
+  unw_getcontext(&context);
+  unw_init_local(&cursor, &context);
+  // Step from `cmp` up to `bsearch`.
+  unw_step(&cursor);
+  bsearch_cursor = cursor;
+  // Step from `bsearch` up to `bsearch_caller`.
+  unw_step(&cursor);
+  bsearch_caller_cursor = cursor;
+  // Step from `bsearch_caller` up to `main`.
+  unw_step(&cursor);
+  main_cursor = cursor;
 
   // Test resuming context where VAPI is active.
   fprintf(stderr,
           "Return to `bsearch` with r3 set to 0 using the global cursor.\n");
-  // TODO
+  unw_set_reg(&bsearch_cursor, UNW_PPC64_R3, (unw_word_t)0);
+  unw_resume(&bsearch_cursor);
 }
 
 char bsearch_caller_ret;
@@ -63,14 +81,16 @@ void *bsearch_caller(void) {
             "`returns_twice_bsearch` (really `bsearch`) with r3 set to "
             "&buf[%d] using the global cursor.\n",
             state);
-    // TODO
+    unw_set_reg(&bsearch_caller_cursor, UNW_PPC64_R3, (unw_word_t)&buf[state]);
+    unw_resume(&bsearch_caller_cursor);
   }
 
   // Test resuming context where VAPI is not active, one frame up from the VAPI
   // caller.
   fprintf(stderr, "Return to `main` at the invocation of `bsearch_caller` with "
                   "r3 set to `&bsearch_caller_ret` using the global cursor.\n");
-  // TODO
+  unw_set_reg(&main_cursor, UNW_PPC64_R3, (unw_word_t)&bsearch_caller_ret);
+  unw_resume(&main_cursor);
 }
 
 int main(void) {
