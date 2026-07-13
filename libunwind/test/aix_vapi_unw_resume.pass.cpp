@@ -58,10 +58,12 @@ extern "C" int cmp(const void *pa, const void *pb) {
   // Step from `cmp` up to `bsearch`.
   unw_step(&cursor);
   // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=cmp
+  // CHECK: libunwind: the next return address=[[VAPI_RA:[^ ]*]] from VAPI
   bsearch_cursor = cursor;
   // Step from `bsearch` up to `bsearch_caller`.
   unw_step(&cursor);
   // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=bsearch
+  // CHECK: libunwind: return address=[[VAPI_RA]] from VAPI
   bsearch_caller_cursor = cursor;
   // Step from `bsearch_caller` up to `main`.
   unw_step(&cursor);
