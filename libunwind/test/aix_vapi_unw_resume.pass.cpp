@@ -57,12 +57,15 @@ extern "C" int cmp(const void *pa, const void *pb) {
   unw_init_local(&cursor, &context);
   // Step from `cmp` up to `bsearch`.
   unw_step(&cursor);
+  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=cmp
   bsearch_cursor = cursor;
   // Step from `bsearch` up to `bsearch_caller`.
   unw_step(&cursor);
+  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=bsearch
   bsearch_caller_cursor = cursor;
   // Step from `bsearch_caller` up to `main`.
   unw_step(&cursor);
+  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z14bsearch_callerv
   main_cursor = cursor;
 
   // Test resuming context where VAPI is active.
