@@ -95,8 +95,9 @@ void *bsearch_caller(void) {
   char buf[3];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wuninitialized-const-pointer"
-  assert(returns_twice_bsearch(&c, buf, 1, 1, cmp) == &buf[state]);
+  void *result = returns_twice_bsearch(&c, buf, 1, 1, cmp);
 #pragma clang diagnostic pop
+  assert(result == &buf[state]);
 
   // Test resuming context where VAPI is not active. The VAPI return glue should
   // be used each time without regard for whether the VAPI is currently active.
