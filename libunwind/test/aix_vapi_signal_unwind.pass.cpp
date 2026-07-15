@@ -12,16 +12,16 @@
 /// handler.
 /// `__builtin_debugtrap` is used because `raise` is also a VAPI function.
 
-/// REQUIRES: target={{.+}}-aix{{.*}}
-/// REQUIRES: has-filecheck
+// REQUIRES: target={{.+}}-aix{{.*}}
+// REQUIRES: has-filecheck
 
-/// ADDITIONAL_COMPILE_FLAGS: -fno-inline -fno-exceptions
+// ADDITIONAL_COMPILE_FLAGS: -fno-inline -fno-exceptions
 
-/// RUN: %{build}
-/// RUN: %{exec} %t.exe 2>&1 \
-/// RUN: | FileCheck --check-prefix=CHECK \
-/// RUN:       %if libunwind-assertions-enabled %{ --check-prefix=DEBUG %} \
-/// RUN:       %s
+// RUN: %{build}
+// RUN: %{exec} %t.exe 2>&1 \
+// RUN: | FileCheck --check-prefix=CHECK \
+// RUN:       %if libunwind-assertions-enabled %{ --check-prefix=DEBUG %} \
+// RUN:       %s
 
 #include <errno.h>
 #include <libunwind.h>
