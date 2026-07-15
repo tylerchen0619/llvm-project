@@ -1,26 +1,26 @@
 //===----------------------------------------------------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+/// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+/// See https://llvm.org/LICENSE.txt for license information.
+/// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// Tests unwinding where the signal handler is a VAPI function.
+/// Tests unwinding where the signal handler is a VAPI function.
 //
-// `exit` is used as the signal handler and the unwinding is done in an atexit handler.
-// `__builtin_debugtrap` is used because `raise` is also a VAPI function.
+/// `exit` is used as the signal handler and the unwinding is done in an atexit handler.
+/// `__builtin_debugtrap` is used because `raise` is also a VAPI function.
 
-// REQUIRES: target={{.+}}-aix{{.*}}
-// REQUIRES: has-filecheck
+/// REQUIRES: target={{.+}}-aix{{.*}}
+/// REQUIRES: has-filecheck
 
-// ADDITIONAL_COMPILE_FLAGS: -fno-inline -fno-exceptions
+/// ADDITIONAL_COMPILE_FLAGS: -fno-inline -fno-exceptions
 
-// RUN: %{build}
-// RUN: %{exec} %t.exe 2>&1 \
-// RUN: | FileCheck --check-prefix=CHECK \
-// RUN:       %if libunwind-assertions-enabled %{ --check-prefix=DEBUG %} \
-// RUN:       %s
+/// RUN: %{build}
+/// RUN: %{exec} %t.exe 2>&1 \
+/// RUN: | FileCheck --check-prefix=CHECK \
+/// RUN:       %if libunwind-assertions-enabled %{ --check-prefix=DEBUG %} \
+/// RUN:       %s
 
 #include <errno.h>
 #include <libunwind.h>
@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// VAPI glue addresses
+/// VAPI glue addresses
 constexpr uintptr_t vapi_glue_addr_ext_32 = 0x8b80;
 constexpr uintptr_t vapi_addr_64 = 0x8e00;
 constexpr size_t vapi_size_64 = 0x0200;
@@ -52,18 +52,22 @@ void my_atexit_handler(void) {
   unw_cursor_t cursor;
   unw_getcontext(&context);
   unw_init_local(&cursor, &context);
-  // Step from `my_atexit_handler` up to `exit`.
+  /// Step from `my_atexit_handler` up to `exit`.
   unw_step(&cursor);
   if (!llu_enabled)
     fprintf(stderr, "libunwind: the next return address=VAPI_NOT_ENABLED from VAPI\n");
+  /// Note:
+  /// The synthetic VAPI_NOT_ENABLED output would appear _after_ the trace
+  /// output indicating that the "next is a signal handler frame". Use DEBUG-DAG
+  /// to allow for that.
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z17my_atexit_handlerv
-  // DEBUG: libunwind: the next return address={{[^ ]*}} from VAPI
-  // DEBUG: libunwind: The next is a signal handler frame
-  // Step from `exit` (signal handler, VAPI) up to `trapper`.
+  // DEBUG-DAG: libunwind: the next return address={{[^ ]*}} from VAPI
+  // DEBUG-DAG: libunwind: The next is a signal handler frame
+  /// Step from `exit` (signal handler, VAPI) up to `trapper`.
   unw_step(&cursor);
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=exit
   // DEBUG-NEXT: libunwind: Possible signal handler frame
-  // Step from `trapper` up to `main`.
+  /// Step from `trapper` up to `main`.
   unw_step(&cursor);
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z7trapperv
   // DEBUG-NOT: VAPI
