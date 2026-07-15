@@ -12,8 +12,10 @@
 // ADDITIONAL_COMPILE_FLAGS: -fno-inline -fno-exceptions
 
 // RUN: %{build}
-// RUN: %{exec} %t.exe \
-// RUN:     %if libunwind-assertions-enabled %{ 2>&1 | FileCheck %s %}
+// RUN: %{exec} %t.exe 2>&1 \
+// RUN: | FileCheck --check-prefix=CHECK \
+// RUN:       %if libunwind-assertions-enabled %{ --check-prefix=DEBUG %} \
+// RUN:       %s
 
 // Tests use of the libunwind C API to step up from a context where the VAPI is
 // active and to resume contexts where
@@ -62,20 +64,20 @@ extern "C" int cmp(const void *pa, const void *pb) {
   if (!llu_enabled)
     fprintf(stderr,
             "libunwind: the next return address=VAPI_NOT_ENABLED from VAPI\n");
-  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=cmp
-  // CHECK: libunwind: the next return address=[[VAPI_RA:[^ ]*]] from VAPI
+  // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=cmp
+  // DEBUG: libunwind: the next return address=[[VAPI_RA:[^ ]*]] from VAPI
   bsearch_cursor = cursor;
   // Step from `bsearch` up to `bsearch_caller`.
   unw_step(&cursor);
   if (!llu_enabled)
     fprintf(stderr, "libunwind: return address=VAPI_NOT_ENABLED from VAPI\n");
-  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=bsearch
-  // CHECK: libunwind: return address=[[VAPI_RA]] from VAPI
+  // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=bsearch
+  // DEBUG: libunwind: return address=[[VAPI_RA]] from VAPI
   bsearch_caller_cursor = cursor;
   // Step from `bsearch_caller` up to `main`.
   unw_step(&cursor);
-  // CHECK-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z14bsearch_callerv
-  // CHECK-NOT: VAPI
+  // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z14bsearch_callerv
+  // DEBUG-NOT: VAPI
   main_cursor = cursor;
 
   // Test resuming context where VAPI is active.
@@ -85,7 +87,7 @@ extern "C" int cmp(const void *pa, const void *pb) {
   unw_resume(&bsearch_cursor);
   __builtin_unreachable();
   // CHECK-LABEL: Return to `bsearch`
-  // CHECK-NOT: VAPI: executing return glue
+  // DEBUG-NOT: VAPI: executing return glue
 }
 
 char bsearch_caller_ret;
@@ -119,9 +121,9 @@ void *bsearch_caller(void) {
     unw_resume(&bsearch_caller_cursor);
     __builtin_unreachable();
     // CHECK-LABEL: Return to `bsearch_caller` {{.*}}&buf[1]
-    // CHECK: libunwind: VAPI: executing return glue
+    // DEBUG: libunwind: VAPI: executing return glue
     // CHECK-LABEL: Return to `bsearch_caller` {{.*}}&buf[2]
-    // CHECK: libunwind: VAPI: executing return glue
+    // DEBUG: libunwind: VAPI: executing return glue
   }
 
   // Test resuming context where VAPI is not active, one frame up from the VAPI
@@ -135,7 +137,7 @@ void *bsearch_caller(void) {
   unw_resume(&main_cursor);
   __builtin_unreachable();
   // CHECK-LABEL: Return to `main`
-  // CHECK: libunwind: VAPI: executing return glue
+  // DEBUG: libunwind: VAPI: executing return glue
 }
 
 // VAPI glue addresses
