@@ -71,9 +71,13 @@ void my_atexit_handler(void) {
     fprintf(stderr,
             "libunwind: The return address in stack VAPI_NOT_ENABLED is within "
             "the range of VAPI address, set isKnownVapiNotActive to true\n");
+  /// Note:
+  /// The synthetic VAPI_NOT_ENABLED output would appear after _all_ of the trace
+  /// output from the `unw_step` call. Use DEBUG instead of DEBUG-NEXT to allow
+  /// for that.
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=exit
   // DEBUG-NEXT: libunwind: Possible signal handler frame
-  // DEBUG-NEXT: libunwind: {{.*}} is within the range of VAPI address, set isKnownVapiNotActive
+  // DEBUG: libunwind: {{.*}} is within the range of VAPI address, set isKnownVapiNotActive
   /// Step from `trapper` up to `main`.
   unw_step(&cursor);
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z7trapperv
