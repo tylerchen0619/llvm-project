@@ -67,8 +67,13 @@ void my_atexit_handler(void) {
   // DEBUG-DAG: libunwind: The next is a signal handler frame
   /// Step from `exit` (signal handler, VAPI) up to `trapper`.
   unw_step(&cursor);
+  if (!llu_enabled)
+    fprintf(stderr,
+            "libunwind: The return address in stack VAPI_NOT_ENABLED is within "
+            "the range of VAPI address, set isKnownVapiNotActive to true\n");
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=exit
   // DEBUG-NEXT: libunwind: Possible signal handler frame
+  // DEBUG-NEXT: libunwind: {{.*}} is within the range of VAPI address, set isKnownVapiNotActive
   /// Step from `trapper` up to `main`.
   unw_step(&cursor);
   // DEBUG-LABEL: libunwind: stepWithTBTable: Look up traceback table of func=_Z7trapperv
