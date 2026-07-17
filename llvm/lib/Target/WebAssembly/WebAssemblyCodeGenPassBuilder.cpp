@@ -242,7 +242,7 @@ void WebAssemblyCodeGenPassBuilder::addPreEmitPass(
 
   // Collect information to prepare for MC lowering / asm printing.
   flushFPMsToMPM(PMW);
-  addModulePass(WebAssemblyMCLowerPass(), PMW);
+  addModulePass(WebAssemblyMCLowerPrePass(), PMW);
 }
 
 } // namespace

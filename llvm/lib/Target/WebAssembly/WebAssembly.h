@@ -301,8 +301,8 @@ public:
 
 FunctionPass *createWebAssemblyPeepholeLegacyPass();
 
-class WebAssemblyMCLowerPass
-    : public RequiredPassInfoMixin<WebAssemblyMCLowerPass> {
+class WebAssemblyMCLowerPrePass
+    : public RequiredPassInfoMixin<WebAssemblyMCLowerPrePass> {
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM);
 };

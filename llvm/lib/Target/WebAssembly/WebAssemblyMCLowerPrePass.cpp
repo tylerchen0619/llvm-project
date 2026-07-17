@@ -100,8 +100,8 @@ bool WebAssemblyMCLowerPreLegacy::runOnModule(Module &M) {
   return mcLower(M, MMI);
 }
 
-PreservedAnalyses WebAssemblyMCLowerPass::run(Module &M,
-                                              ModuleAnalysisManager &MAM) {
+PreservedAnalyses WebAssemblyMCLowerPrePass::run(Module &M,
+                                                 ModuleAnalysisManager &MAM) {
   MachineModuleInfo &MMI = MAM.getResult<MachineModuleAnalysis>(M).getMMI();
   return mcLower(M, MMI) ? PreservedAnalyses::none().preserveSet<CFGAnalyses>()
                          : PreservedAnalyses::all();
