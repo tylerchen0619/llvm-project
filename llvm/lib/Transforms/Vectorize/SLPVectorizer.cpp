@@ -1469,7 +1469,8 @@ public:
     Vectorize,
     ScatterVectorize,
     StridedVectorize,
-    CompressVectorize
+    CompressVectorize,
+    BlendedLoadVectorize
   };
 
   using ValueList = SmallVector<Value *, 8>;
@@ -3766,13 +3767,15 @@ private:
     /// (either with vector instruction or with scatter/gather
     /// intrinsics for store/load)?
     enum EntryState {
-      Vectorize,         ///< The node is regularly vectorized.
-      ScatterVectorize,  ///< Masked scatter/gather node.
-      StridedVectorize,  ///< Strided loads (and stores)
-      ExpandVectorize,   ///< Masked stores, the values are expanded into
-                         ///< a wider vector and vectorized with a mask.
-      CompressVectorize, ///< (Masked) load with compress.
-      NeedToGather,      ///< Gather/buildvector node.
+      Vectorize,            ///< The node is regularly vectorized.
+      ScatterVectorize,     ///< Masked scatter/gather node.
+      StridedVectorize,     ///< Strided loads (and stores)
+      ExpandVectorize,      ///< Masked stores, the values are expanded into
+                            ///< a wider vector and vectorized with a mask.
+      CompressVectorize,    ///< (Masked) load with compress.
+      BlendedLoadVectorize, ///< (Masked) loads blended via `select` from two
+                            ///< candidate base pointers.
+      NeedToGather,         ///< Gather/buildvector node.
       CombinedVectorize, ///< Vectorized node, combined with its user into more
                          ///< complex node like select/cmp to minmax, mul/add to
                          ///< fma, etc. Must be used for the following nodes in
@@ -4062,6 +4065,9 @@ private:
         break;
       case CompressVectorize:
         dbgs() << "CompressVectorize\n";
+        break;
+      case BlendedLoadVectorize:
+        dbgs() << "BlendedLoadVectorize\n";
         break;
       case NeedToGather:
         dbgs() << "NeedToGather\n";
@@ -6209,7 +6215,8 @@ struct llvm::DOTGraphTraits<BoUpSLP *> : public DefaultDOTGraphTraits {
     if (Entry->State == TreeEntry::ScatterVectorize ||
         Entry->State == TreeEntry::StridedVectorize ||
         Entry->State == TreeEntry::ExpandVectorize ||
-        Entry->State == TreeEntry::CompressVectorize)
+        Entry->State == TreeEntry::CompressVectorize ||
+        Entry->State == TreeEntry::BlendedLoadVectorize)
       return "color=blue";
     return "";
   }
@@ -6995,6 +7002,29 @@ isMaskedLoadCompress(ArrayRef<Value *> VL, ArrayRef<Value *> PointerOps,
                               CompressMask, LoadVecTy);
 }
 
+/// Returns the cost of a BlendedLoadVectorize node loading \p VecTy: two
+/// masked loads (one per candidate base) blended by a select, plus building
+/// the blend mask from the scalar conditions and negating it for the
+/// false-lane load.
+static InstructionCost getBlendedLoadCost(const TargetTransformInfo &TTI,
+                                          Type *VecTy, Align Alignment,
+                                          unsigned AddressSpace,
+                                          TTI::TargetCostKind CostKind) {
+  Type *CmpTy = CmpInst::makeCmpResultType(VecTy);
+  InstructionCost MaskBuildCost = getScalarizationOverhead(
+      TTI, CmpTy->getScalarType(), cast<VectorType>(CmpTy),
+      APInt::getAllOnes(getNumElements(VecTy)), /*Insert=*/true,
+      /*Extract=*/false, CostKind);
+  return 2 * TTI.getMemIntrinsicInstrCost(
+                 MemIntrinsicCostAttributes(Intrinsic::masked_load, VecTy,
+                                            Alignment, AddressSpace),
+                 CostKind) +
+         MaskBuildCost +
+         TTI.getArithmeticInstrCost(Instruction::Xor, CmpTy, CostKind) +
+         TTI.getCmpSelInstrCost(Instruction::Select, VecTy, CmpTy,
+                                CmpInst::BAD_ICMP_PREDICATE, CostKind);
+}
+
 /// Checks if the stores \p VL with pointers \p PointerOps can be lowered as a
 /// single masked store. On success \p StoreVecTy is the widened store type and
 /// \p ReuseShuffleIndices is the expand mask that places each stored value at
@@ -7450,6 +7480,24 @@ BoUpSLP::LoadsState BoUpSLP::canVectorizeLoads(
     return *MaskedGatherLegal;
   };
   if (!IsSorted) {
+    // Check for a group of loads, each selecting its address (directly, or
+    // via a constant-offset GEP) between the same two candidate base
+    // pointers - the shape if-converted, fully-unrolled loop bodies of the
+    // form `x = cond ? A[i] : B[i]` take. If found, model it as two masked
+    // loads (one per candidate) blended by the (vectorized) condition,
+    // rather than falling back to a gather of the individual scalar loads.
+    Value *TrueBase = nullptr;
+    Value *FalseBase = nullptr;
+    SmallVector<Value *> Conditions;
+    if (isSelectedBaseLoad(VL, PointerOps, *DL, TrueBase, FalseBase,
+                           Conditions) &&
+        TTI->isLegalMaskedLoad(VecTy, CommonAlignment,
+                               cast<LoadInst>(VL0)->getPointerAddressSpace())) {
+      // Keep PointerOps/Order untouched: there is no per-lane address operand
+      // to recurse into, so the operand list stays the real pointer operands.
+      return LoadsState::BlendedLoadVectorize;
+    }
+
     if (analyzeRtStrideCandidate(PointerOps, ScalarTy, CommonAlignment, Order,
                                  SPtrInfo, /*isLoad=*/true))
       return LoadsState::StridedVectorize;
@@ -7676,6 +7724,13 @@ BoUpSLP::LoadsState BoUpSLP::canVectorizeLoads(
                                /*VariableMask=*/false, CommonAlignment),
                            CostKind) +
                        VectorGEPCost;
+          break;
+        case LoadsState::BlendedLoadVectorize:
+          // Two masked loads (one per candidate base) plus a select; no address
+          // vector is materialized, so VectorGEPCost is skipped.
+          VecLdCost +=
+              getBlendedLoadCost(TTI, SubVecTy, CommonAlignment,
+                                 LI0->getPointerAddressSpace(), CostKind);
           break;
         case LoadsState::Gather:
           llvm_unreachable("Gathers are not added to States");
@@ -8047,7 +8102,8 @@ BoUpSLP::getReorderingData(const TreeEntry &TE, bool TopToBottom,
       ((TE.State == TreeEntry::Vectorize ||
         TE.State == TreeEntry::StridedVectorize ||
         TE.State == TreeEntry::ExpandVectorize ||
-        TE.State == TreeEntry::CompressVectorize) &&
+        TE.State == TreeEntry::CompressVectorize ||
+        TE.State == TreeEntry::BlendedLoadVectorize) &&
        (isa<LoadInst, ExtractElementInst, ExtractValueInst>(TE.getMainOp()) ||
         (TopToBottom && isa<StoreInst, InsertElementInst, InsertValueInst>(
                             TE.getMainOp()))))) {
@@ -8261,7 +8317,8 @@ BoUpSLP::getReorderingData(const TreeEntry &TE, bool TopToBottom,
       LoadsState Res = canVectorizeLoads(TE.Scalars, TE.Scalars.front(),
                                          CurrentOrder, PointerOps, SPtrInfo);
       if (Res == LoadsState::Vectorize || Res == LoadsState::StridedVectorize ||
-          Res == LoadsState::CompressVectorize)
+          Res == LoadsState::CompressVectorize ||
+          Res == LoadsState::BlendedLoadVectorize)
         return std::move(CurrentOrder);
     }
     if (std::optional<OrdersType> CurrentOrder =
@@ -8729,7 +8786,8 @@ void BoUpSLP::reorderTopToBottom() {
           ((TE->State == TreeEntry::Vectorize ||
             TE->State == TreeEntry::StridedVectorize ||
             TE->State == TreeEntry::ExpandVectorize ||
-            TE->State == TreeEntry::CompressVectorize) &&
+            TE->State == TreeEntry::CompressVectorize ||
+            TE->State == TreeEntry::BlendedLoadVectorize) &&
            (isa<ExtractElementInst, ExtractValueInst, LoadInst, StoreInst,
                 InsertElementInst, InsertValueInst>(TE->getMainOp()) ||
             (SLPReVec && isa<ShuffleVectorInst>(TE->getMainOp()))))) {
@@ -8782,6 +8840,7 @@ void BoUpSLP::buildReorderableOperands(
                   OpData.second->State == TreeEntry::StridedVectorize ||
                   OpData.second->State == TreeEntry::ExpandVectorize ||
                   OpData.second->State == TreeEntry::CompressVectorize ||
+                  OpData.second->State == TreeEntry::BlendedLoadVectorize ||
                   OpData.second->State == TreeEntry::SplitVectorize);
         }))
       continue;
@@ -8802,7 +8861,8 @@ void BoUpSLP::buildReorderableOperands(
       if (UserTE->getOpcode() == Instruction::Load &&
           (UserTE->State == TreeEntry::Vectorize ||
            UserTE->State == TreeEntry::StridedVectorize ||
-           UserTE->State == TreeEntry::CompressVectorize))
+           UserTE->State == TreeEntry::CompressVectorize ||
+           UserTE->State == TreeEntry::BlendedLoadVectorize))
         continue;
     }
     TreeEntry *TE = getOperandEntry(UserTE, I);
@@ -8845,6 +8905,7 @@ void BoUpSLP::reorderBottomToTop(bool IgnoreReorder) {
         TE->State != TreeEntry::StridedVectorize &&
         TE->State != TreeEntry::ExpandVectorize &&
         TE->State != TreeEntry::CompressVectorize &&
+        TE->State != TreeEntry::BlendedLoadVectorize &&
         TE->State != TreeEntry::SplitVectorize)
       NonVectorized.insert(TE.get());
     if (std::optional<OrdersType> CurrentOrder =
@@ -8884,6 +8945,7 @@ void BoUpSLP::reorderBottomToTop(bool IgnoreReorder) {
             TE->State == TreeEntry::StridedVectorize ||
             TE->State == TreeEntry::ExpandVectorize ||
             TE->State == TreeEntry::CompressVectorize ||
+            TE->State == TreeEntry::BlendedLoadVectorize ||
             TE->State == TreeEntry::SplitVectorize ||
             (TE->isGather() && GathersToOrders.contains(TE))) ||
           !TE->UserTreeIndex || !TE->ReuseShuffleIndices.empty() ||
@@ -9194,6 +9256,7 @@ void BoUpSLP::reorderBottomToTop(bool IgnoreReorder) {
             TE->State != TreeEntry::StridedVectorize &&
             TE->State != TreeEntry::ExpandVectorize &&
             TE->State != TreeEntry::CompressVectorize &&
+            TE->State != TreeEntry::BlendedLoadVectorize &&
             TE->State != TreeEntry::SplitVectorize &&
             (TE->State != TreeEntry::ScatterVectorize ||
              TE->ReorderIndices.empty()))
@@ -10060,7 +10123,8 @@ void BoUpSLP::tryToVectorizeGatheredLoads(
                            LoadsState State = canVectorizeLoads(
                                VL, VL.front(), Order, PointerOps, SPtrInfo);
                            if (State == LoadsState::ScatterVectorize ||
-                               State == LoadsState::CompressVectorize)
+                               State == LoadsState::CompressVectorize ||
+                               State == LoadsState::BlendedLoadVectorize)
                              return false;
                            ConsecutiveNodesSize += VL.size();
                            size_t Start = std::distance(Slice.begin(), It);
@@ -10718,6 +10782,14 @@ BoUpSLP::TreeEntry::EntryState BoUpSLP::getScalarsVectorizationState(
       }
       return IsGatheredNode() ? TreeEntry::NeedToGather
                               : TreeEntry::StridedVectorize;
+    case LoadsState::BlendedLoadVectorize:
+      if (!IsGraphTransformMode && VectorizableTree.size() > 1) {
+        // Delay slow vectorized nodes for better vectorization attempts.
+        LoadEntriesToVectorize.insert(VectorizableTree.size());
+        return TreeEntry::NeedToGather;
+      }
+      return IsGatheredNode() ? TreeEntry::NeedToGather
+                              : TreeEntry::BlendedLoadVectorize;
     case LoadsState::Gather:
 #ifndef NDEBUG
       Type *ScalarTy = VL0->getType();
@@ -11262,7 +11334,8 @@ static bool tryToFindDuplicates(SmallVectorImpl<Value *> &VL,
       return (IncludeGather && Res == BoUpSLP::LoadsState::Gather) ||
              Res == BoUpSLP::LoadsState::ScatterVectorize ||
              Res == BoUpSLP::LoadsState::StridedVectorize ||
-             Res == BoUpSLP::LoadsState::CompressVectorize;
+             Res == BoUpSLP::LoadsState::CompressVectorize ||
+             Res == BoUpSLP::LoadsState::BlendedLoadVectorize;
     };
     // Operand of the root tree entry on the vectorize path: always pack the
     // scalars (PackProfitable=true). Choose between keeping the original VL
@@ -13016,6 +13089,16 @@ void BoUpSLP::buildTreeRec(ArrayRef<Value *> VLRef, unsigned Depth,
             dbgs()
                 << "SLP: added a new TreeEntry (non-consecutive LoadInst).\n";
             TE->dump());
+        break;
+      case TreeEntry::BlendedLoadVectorize:
+        // Load blended (via `select`) from two candidate bases, emitted as two
+        // masked loads plus a select (see isSelectedBaseLoad). No per-lane
+        // address operand to recurse into, so Operands stays the real pointer
+        // operand list.
+        TE = newTreeEntry(VL, TreeEntry::BlendedLoadVectorize, Bundle, S,
+                          UserTreeIdx, ReuseShuffleIndices);
+        LLVM_DEBUG(dbgs() << "SLP: added a new TreeEntry (blended LoadInst).\n";
+                   TE->dump());
         break;
       case TreeEntry::ExpandVectorize:
       case TreeEntry::CombinedVectorize:
@@ -16338,7 +16421,8 @@ TTI::CastContextHint BoUpSLP::getCastContextHint(const TreeEntry &TE) const {
   if (TE.State == TreeEntry::ScatterVectorize ||
       TE.State == TreeEntry::StridedVectorize)
     return TTI::CastContextHint::GatherScatter;
-  if (TE.State == TreeEntry::CompressVectorize)
+  if (TE.State == TreeEntry::CompressVectorize ||
+      TE.State == TreeEntry::BlendedLoadVectorize)
     return TTI::CastContextHint::Masked;
   if (TE.State == TreeEntry::Vectorize && TE.getOpcode() == Instruction::Load &&
       !TE.isAltShuffle()) {
@@ -16767,7 +16851,8 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
           E->State == TreeEntry::ScatterVectorize ||
           E->State == TreeEntry::StridedVectorize ||
           E->State == TreeEntry::ExpandVectorize ||
-          E->State == TreeEntry::CompressVectorize) &&
+          E->State == TreeEntry::CompressVectorize ||
+          E->State == TreeEntry::BlendedLoadVectorize) &&
          "Unhandled state");
   assert(E->getOpcode() &&
          ((allSameType(VL) && allSameBlock(VL)) ||
@@ -17653,6 +17738,14 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
             CostKind);
         break;
       }
+      case TreeEntry::BlendedLoadVectorize: {
+        // Two masked loads (one per candidate base) blended by a select.
+        Align CommonAlignment =
+            computeCommonAlignment<LoadInst>(UniqueValues.getArrayRef());
+        VecLdCost = getBlendedLoadCost(*TTI, VecTy, CommonAlignment,
+                                       LI0->getPointerAddressSpace(), CostKind);
+        break;
+      }
       case TreeEntry::ExpandVectorize:
       case TreeEntry::CombinedVectorize:
       case TreeEntry::SplitVectorize:
@@ -17663,9 +17756,10 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
     };
 
     InstructionCost Cost = GetCostDiff(GetScalarCost, GetVectorCost);
-    // If this node generates masked gather load then it is not a terminal node.
-    // Hence address operand cost is estimated separately.
-    if (E->State == TreeEntry::ScatterVectorize)
+    // Masked gather and blended loads are not terminal nodes: their address
+    // cost is estimated separately (blended loads have no per-lane address).
+    if (E->State == TreeEntry::ScatterVectorize ||
+        E->State == TreeEntry::BlendedLoadVectorize)
       return Cost;
 
     // Estimate cost of GEPs since this tree node is a terminator.
@@ -17965,6 +18059,7 @@ bool BoUpSLP::isFullyVectorizableTinyTree(bool ForReduction) const {
        VectorizableTree[0]->State == TreeEntry::StridedVectorize ||
        VectorizableTree[0]->State == TreeEntry::ExpandVectorize ||
        VectorizableTree[0]->State == TreeEntry::CompressVectorize ||
+       VectorizableTree[0]->State == TreeEntry::BlendedLoadVectorize ||
        (ForReduction &&
         AreVectorizableGathers(VectorizableTree[0].get(),
                                VectorizableTree[0]->Scalars.size()) &&
@@ -17989,7 +18084,8 @@ bool BoUpSLP::isFullyVectorizableTinyTree(bool ForReduction) const {
        VectorizableTree[0]->State != TreeEntry::ScatterVectorize &&
        VectorizableTree[0]->State != TreeEntry::StridedVectorize &&
        VectorizableTree[0]->State != TreeEntry::ExpandVectorize &&
-       VectorizableTree[0]->State != TreeEntry::CompressVectorize))
+       VectorizableTree[0]->State != TreeEntry::CompressVectorize &&
+       VectorizableTree[0]->State != TreeEntry::BlendedLoadVectorize))
     return false;
 
   return true;
@@ -23828,6 +23924,34 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
             /*ArgNo=*/0,
             Attribute::getWithAlignment(Inst->getContext(), CommonAlignment));
         NewLI = Inst;
+      } else if (E->State == TreeEntry::BlendedLoadVectorize) {
+        // E->Scalars stays in the dense order isSelectedBaseLoad validated;
+        // ReorderIndices, if any, is handled below by the shared FinalShuffle,
+        // same as for StridedVectorize.
+        SmallVector<Value *> BlendPointerOps(E->Scalars.size());
+        for (auto [I, V] : enumerate(E->Scalars))
+          BlendPointerOps[I] = cast<LoadInst>(V)->getPointerOperand();
+        Value *TrueBase = nullptr;
+        Value *FalseBase = nullptr;
+        SmallVector<Value *> Conditions;
+        bool Found = isSelectedBaseLoad(E->Scalars, BlendPointerOps, *DL,
+                                        TrueBase, FalseBase, Conditions);
+        assert(Found && "Expected a valid blended-load pattern");
+        (void)Found;
+        Align CommonAlignment = computeCommonAlignment<LoadInst>(E->Scalars);
+        Value *BlendMask = PoisonValue::get(
+            FixedVectorType::get(Builder.getInt1Ty(), Conditions.size()));
+        for (auto [I, Cond] : enumerate(Conditions))
+          BlendMask =
+              Builder.CreateInsertElement(BlendMask, Cond, Builder.getInt32(I));
+        Value *NotMask = Builder.CreateNot(BlendMask);
+        Value *VecPoison = PoisonValue::get(VecTy);
+        Value *TrueVal = Builder.CreateMaskedLoad(
+            VecTy, TrueBase, CommonAlignment, BlendMask, VecPoison);
+        Value *FalseVal = Builder.CreateMaskedLoad(
+            VecTy, FalseBase, CommonAlignment, NotMask, VecPoison);
+        NewLI = cast<Instruction>(
+            Builder.CreateSelect(BlendMask, TrueVal, FalseVal));
       } else {
         assert(E->State == TreeEntry::ScatterVectorize && "Unhandled state");
         Value *VecPtr = vectorizeOperand(E, 0);
@@ -23854,7 +23978,8 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
         Align CommonAlignment = computeCommonAlignment<LoadInst>(E->Scalars);
         NewLI = Builder.CreateMaskedGather(VecTy, VecPtr, CommonAlignment);
       }
-      Value *V = E->State == TreeEntry::CompressVectorize
+      Value *V = (E->State == TreeEntry::CompressVectorize ||
+                  E->State == TreeEntry::BlendedLoadVectorize)
                      ? NewLI
                      : PropagateIRFlags(NewLI);
 
@@ -25169,7 +25294,8 @@ Value *BoUpSLP::vectorizeTree(
                         (E->State == TreeEntry::Vectorize ||
                          E->State == TreeEntry::StridedVectorize ||
                          E->State == TreeEntry::ExpandVectorize ||
-                         E->State == TreeEntry::CompressVectorize) &&
+                         E->State == TreeEntry::CompressVectorize ||
+                         E->State == TreeEntry::BlendedLoadVectorize) &&
                         any_of(UseEntries, [&, TTI = TTI](TreeEntry *UseEntry) {
                           return (UseEntry->State == TreeEntry::Vectorize ||
                                   UseEntry->State ==
@@ -25177,7 +25303,9 @@ Value *BoUpSLP::vectorizeTree(
                                   UseEntry->State ==
                                       TreeEntry::ExpandVectorize ||
                                   UseEntry->State ==
-                                      TreeEntry::CompressVectorize) &&
+                                      TreeEntry::CompressVectorize ||
+                                  UseEntry->State ==
+                                      TreeEntry::BlendedLoadVectorize) &&
                                  doesInTreeUserNeedToExtract(
                                      Scalar, getRootEntryInstruction(*UseEntry),
                                      TLI, TTI);
