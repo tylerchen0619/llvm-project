@@ -823,22 +823,31 @@ LLVMInitializeWebAssemblyAsmPrinter() {
   RegisterAsmPrinter<WebAssemblyAsmPrinter> Y(getTheWebAssemblyTarget64());
 }
 
-PreservedAnalyses WebAssemblyAsmPrinterBeginPass::run(Module &M, ModuleAnalysisManager &MAM) {
-  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter&>(MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
+PreservedAnalyses
+WebAssemblyAsmPrinterBeginPass::run(Module &M, ModuleAnalysisManager &MAM) {
+  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter &>(
+      MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
   setupModuleAsmPrinter(M, MAM, AsmPrinter);
   AsmPrinter.doInitialization(M);
   return PreservedAnalyses::all();
 }
 
-PreservedAnalyses WebAssemblyAsmPrinterPass::run(MachineFunction &MF, MachineFunctionAnalysisManager &MFAM) {
-  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter&>(MFAM.getResult<ModuleAnalysisManagerMachineFunctionProxy>(MF).getCachedResult<AsmPrinterAnalysis>(*MF.getFunction().getParent())->getPrinter());
+PreservedAnalyses
+WebAssemblyAsmPrinterPass::run(MachineFunction &MF,
+                               MachineFunctionAnalysisManager &MFAM) {
+  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter &>(
+      MFAM.getResult<ModuleAnalysisManagerMachineFunctionProxy>(MF)
+          .getCachedResult<AsmPrinterAnalysis>(*MF.getFunction().getParent())
+          ->getPrinter());
   setupMachineFunctionAsmPrinter(MFAM, MF, AsmPrinter);
   AsmPrinter.runOnMachineFunction(MF);
   return PreservedAnalyses::all();
 }
 
-PreservedAnalyses WebAssemblyAsmPrinterEndPass::run(Module &M, ModuleAnalysisManager &MAM) {
-  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter&>(MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
+PreservedAnalyses
+WebAssemblyAsmPrinterEndPass::run(Module &M, ModuleAnalysisManager &MAM) {
+  WebAssemblyAsmPrinter &AsmPrinter = static_cast<WebAssemblyAsmPrinter &>(
+      MAM.getResult<AsmPrinterAnalysis>(M).getPrinter());
   setupModuleAsmPrinter(M, MAM, AsmPrinter);
   AsmPrinter.doFinalization(M);
   return PreservedAnalyses::all();

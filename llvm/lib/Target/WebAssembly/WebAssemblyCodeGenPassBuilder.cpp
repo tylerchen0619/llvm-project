@@ -249,15 +249,18 @@ void WebAssemblyCodeGenPassBuilder::addPreEmitPass(
   addModulePass(WebAssemblyMCLowerPrePass(), PMW);
 }
 
-void WebAssemblyCodeGenPassBuilder::addAsmPrinterBegin(PassManagerWrapper &PMW) const {
+void WebAssemblyCodeGenPassBuilder::addAsmPrinterBegin(
+    PassManagerWrapper &PMW) const {
   addModulePass(WebAssemblyAsmPrinterBeginPass(), PMW);
 }
 
-void WebAssemblyCodeGenPassBuilder::addAsmPrinter(PassManagerWrapper &PMW) const {
+void WebAssemblyCodeGenPassBuilder::addAsmPrinter(
+    PassManagerWrapper &PMW) const {
   addMachineFunctionPass(WebAssemblyAsmPrinterPass(), PMW);
 }
 
-void WebAssemblyCodeGenPassBuilder::adddAsmPrinterEnd(PassManagerWrapper &PMW) const {
+void WebAssemblyCodeGenPassBuilder::adddAsmPrinterEnd(
+    PassManagerWrapper &PMW) const {
   addModulePass(WebAssemblyAsmPrinterEndPass(), PMW);
 }
 
