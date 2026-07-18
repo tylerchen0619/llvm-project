@@ -219,7 +219,7 @@ static cl::list<std::string> PassPlugins("load-pass-plugin",
                                          cl::desc("Load plugin library"));
 
 static cl::opt<bool> EnableNewPassManager(
-    "enable-new-pm", cl::desc("Enable the new pass manager"), cl::init(true));
+    "enable-new-pm", cl::desc("Enable the new pass manager"), cl::init(false));
 
 // This flag specifies a textual description of the optimization pass pipeline
 // to run over the module. This flag switches opt to use the new pass manager
