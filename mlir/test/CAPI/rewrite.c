@@ -895,9 +895,9 @@ static MlirValue buildTargetCast(MlirRewriterBase rewriter, MlirType outputType,
 
 // 1:N type conversion callback: maps i32 -> (i16, i16) and leaves every other
 // type unchanged (1:1 identity).
-static MlirLogicalResult splitI32(MlirType type,
-                                  MlirTypeConverterConversionResults results,
-                                  void *userData) {
+static MlirTypeConverterConversionStatus
+splitI32(MlirType type, MlirTypeConverterConversionResults results,
+         void *userData) {
   (void)userData;
   if (mlirTypeIsAInteger(type) && mlirIntegerTypeGetWidth(type) == 32) {
     MlirType i16 = mlirIntegerTypeGet(mlirTypeGetContext(type), 16);
@@ -906,19 +906,19 @@ static MlirLogicalResult splitI32(MlirType type,
   } else {
     mlirTypeConverterConversionResultsAppend(results, type);
   }
-  return mlirLogicalResultSuccess();
+  return MlirTypeConverterConversionStatusSuccess;
 }
 
 // 1:N type conversion callback: erases i32 (converts it to zero types) and
 // leaves every other type unchanged (1:1 identity).
-static MlirLogicalResult eraseI32(MlirType type,
-                                  MlirTypeConverterConversionResults results,
-                                  void *userData) {
+static MlirTypeConverterConversionStatus
+eraseI32(MlirType type, MlirTypeConverterConversionResults results,
+         void *userData) {
   (void)userData;
   if (mlirTypeIsAInteger(type) && mlirIntegerTypeGetWidth(type) == 32)
-    return mlirLogicalResultSuccess(); // append nothing -> erase
+    return MlirTypeConverterConversionStatusSuccess; // append nothing -> erase
   mlirTypeConverterConversionResultsAppend(results, type);
-  return mlirLogicalResultSuccess();
+  return MlirTypeConverterConversionStatusSuccess;
 }
 
 // 1:N type conversion callback: builds one `test.cast` per requested
@@ -949,9 +949,9 @@ static MlirLogicalResult buildSplitCast(MlirRewriterBase rewriter,
 }
 
 // 1:N type conversion callback that appends bogus result types and then
-// declines (returns failure). The binding must roll back the appended types so
+// declines (returns Declined). The binding must roll back the appended types so
 // they do not pollute a subsequently-tried conversion function.
-static MlirLogicalResult appendThenDeclineConversion(
+static MlirTypeConverterConversionStatus appendThenDeclineConversion(
     MlirType type, MlirTypeConverterConversionResults results, void *userData) {
   intptr_t *counter = (intptr_t *)userData;
   if (counter)
@@ -962,7 +962,23 @@ static MlirLogicalResult appendThenDeclineConversion(
   mlirTypeConverterConversionResultsAppend(results, i8);
   mlirTypeConverterConversionResultsAppend(results, i8);
   mlirTypeConverterConversionResultsAppend(results, i8);
-  return mlirLogicalResultFailure();
+  return MlirTypeConverterConversionStatusDeclined;
+}
+
+// 1:N type conversion callback that appends bogus result types and then fails
+// hard (returns Failure). Unlike a decline, this must abort the conversion
+// without trying any earlier-registered conversion function; the binding must
+// still roll back the appended types.
+static MlirTypeConverterConversionStatus appendThenFailConversion(
+    MlirType type, MlirTypeConverterConversionResults results, void *userData) {
+  intptr_t *counter = (intptr_t *)userData;
+  if (counter)
+    ++(*counter);
+  MlirType i8 = mlirIntegerTypeGet(mlirTypeGetContext(type), 8);
+  mlirTypeConverterConversionResultsAppend(results, i8);
+  mlirTypeConverterConversionResultsAppend(results, i8);
+  mlirTypeConverterConversionResultsAppend(results, i8);
+  return MlirTypeConverterConversionStatusFailure;
 }
 
 // 1:N target materialization that always declines (returns failure) and records
@@ -1360,6 +1376,76 @@ void testTypeConverter1ToNConversionDeclineRollback(MlirContext ctx) {
 
   // CHECK: testTypeConverter1ToNConversionDeclineRollback: PASSED
   fprintf(stderr, "testTypeConverter1ToNConversionDeclineRollback: PASSED\n");
+}
+
+void testTypeConverter1ToNConversionFailure(MlirContext ctx) {
+  // CHECK-LABEL: @testTypeConverter1ToNConversionFailure
+  fprintf(stderr, "@testTypeConverter1ToNConversionFailure\n");
+
+  // Same setup as the decline-rollback test, but the extra conversion returns a
+  // hard failure instead of a decline. Because it is registered last (tried
+  // first), the failure must abort the conversion of i32 without falling back
+  // to the i32 -> (i16, i16) conversion, so the whole conversion fails and the
+  // IR is left unchanged.
+  const char *moduleString = "%0 = \"test.producer\"() : () -> i32\n"
+                             "\"test.consumer\"(%0) : (i32) -> ()\n";
+  MlirModule module =
+      mlirModuleCreateParse(ctx, mlirStringRefCreateFromCString(moduleString));
+  MlirOperation moduleOp = mlirModuleGetOperation(module);
+
+  MlirTypeConverter converter = mlirTypeConverterCreate();
+  mlirTypeConverterAdd1ToNConversion(converter, splitI32, NULL);
+  intptr_t failCounter = 0;
+  mlirTypeConverterAdd1ToNConversion(converter, appendThenFailConversion,
+                                     &failCounter);
+  mlirTypeConverterAdd1ToNTargetMaterialization(converter, buildSplitCast,
+                                                NULL);
+
+  MlirRewritePatternSet patterns = mlirRewritePatternSetCreate(ctx);
+  MlirConversionPatternCallbacks callbacks = {NULL, NULL, NULL,
+                                              convertConsumer1ToN};
+  MlirConversionPattern pattern = mlirOpConversionPatternCreate(
+      mlirStringRefCreateFromCString("test.consumer"), 1, ctx, converter,
+      callbacks, NULL, 0, NULL);
+  mlirRewritePatternSetAdd(patterns,
+                           mlirConversionPatternAsRewritePattern(pattern));
+  MlirFrozenRewritePatternSet frozen = mlirFreezeRewritePattern(patterns);
+
+  MlirConversionTarget target = mlirConversionTargetCreate(ctx);
+  mlirConversionTargetAddIllegalOp(
+      target, mlirStringRefCreateFromCString("test.consumer"));
+  mlirConversionTargetAddLegalOp(
+      target, mlirStringRefCreateFromCString("test.producer"));
+  mlirConversionTargetAddLegalOp(
+      target, mlirStringRefCreateFromCString("test.consumer_legal"));
+  mlirConversionTargetAddLegalOp(target,
+                                 mlirStringRefCreateFromCString("test.cast"));
+  mlirConversionTargetAddLegalOp(
+      target, mlirStringRefCreateFromCString("builtin.module"));
+
+  MlirConversionConfig config = mlirConversionConfigCreate();
+  MlirLogicalResult result =
+      mlirApplyPartialConversion(moduleOp, target, frozen, config);
+  assert(mlirLogicalResultIsFailure(result) &&
+         "hard failure must abort the conversion");
+  assert(failCounter > 0 && "failing conversion must be consulted");
+
+  // The conversion failed, so the IR is rolled back and left unchanged: i32 is
+  // never split and no `test.cast` is produced.
+  mlirOperationDump(moduleOp);
+  // clang-format off
+  // CHECK: %[[v:.*]] = "test.producer"() : () -> i32
+  // CHECK: "test.consumer"(%[[v]]) : (i32) -> ()
+  // clang-format on
+
+  mlirConversionConfigDestroy(config);
+  mlirConversionTargetDestroy(target);
+  mlirFrozenRewritePatternSetDestroy(frozen);
+  mlirTypeConverterDestroy(converter);
+  mlirModuleDestroy(module);
+
+  // CHECK: testTypeConverter1ToNConversionFailure: PASSED
+  fprintf(stderr, "testTypeConverter1ToNConversionFailure: PASSED\n");
 }
 
 void testTypeConverter1ToNTargetMaterializationDecline(MlirContext ctx) {
@@ -1762,6 +1848,7 @@ int main(void) {
   testTypeConverterTargetMaterialization(ctx);
   testTypeConverter1ToNTargetMaterialization(ctx);
   testTypeConverter1ToNConversionDeclineRollback(ctx);
+  testTypeConverter1ToNConversionFailure(ctx);
   testTypeConverter1ToNTargetMaterializationDecline(ctx);
   testTypeConverterMultiInputSourceMaterialization(ctx);
   testConversionReplaceOpWithMultipleRanges(ctx);

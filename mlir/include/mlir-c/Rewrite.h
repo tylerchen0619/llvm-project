@@ -622,14 +622,26 @@ typedef struct MlirTypeConverterConversionResults {
 MLIR_CAPI_EXPORTED void mlirTypeConverterConversionResultsAppend(
     MlirTypeConverterConversionResults results, MlirType type);
 
+/// Outcome of a 1:N type conversion callback
+/// (MlirTypeConverter1ToNConversionCallback). Mirrors the three states of the
+/// underlying C++ `std::optional<LogicalResult>` return.
+typedef enum MlirTypeConverterConversionStatus {
+  /// The type was converted; the types appended to the results accumulator make
+  /// up the conversion (appending none erases the type).
+  MlirTypeConverterConversionStatusSuccess = 0,
+  /// The conversion failed hard; no further conversion function will be tried.
+  /// Any types appended before returning failure are discarded.
+  MlirTypeConverterConversionStatusFailure = 1,
+  /// The conversion was declined; another registered conversion function may be
+  /// tried. Any types appended before declining are discarded.
+  MlirTypeConverterConversionStatusDeclined = 2,
+} MlirTypeConverterConversionStatus;
+
 /// Callback type for 1:N type conversion functions. For the given `type`, the
 /// callback appends zero or more converted result types to `results` (via
-/// mlirTypeConverterConversionResultsAppend) and returns success. Returning
-/// failure leaves the type unconverted and allows another conversion function
-/// to be tried; any types appended before returning failure are discarded.
-/// Appending a single type is a 1:1 conversion; appending several is a 1:N
-/// conversion; appending none (on success) erases the type.
-typedef MlirLogicalResult (*MlirTypeConverter1ToNConversionCallback)(
+/// mlirTypeConverterConversionResultsAppend) and returns a status.
+typedef MlirTypeConverterConversionStatus (
+    *MlirTypeConverter1ToNConversionCallback)(
     MlirType type, MlirTypeConverterConversionResults results, void *userData);
 
 /// Add a 1:N type conversion function to the given TypeConverter.

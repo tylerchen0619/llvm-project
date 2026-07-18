@@ -694,16 +694,25 @@ void mlirTypeConverterAdd1ToNConversion(
               -> std::optional<LogicalResult> {
             size_t numPriorResults = results.size();
             MlirTypeConverterConversionResults wrappedResults{&results};
-            MlirLogicalResult result =
+            MlirTypeConverterConversionStatus status =
                 convertType(wrap(type), wrappedResults, userData);
-            if (mlirLogicalResultIsFailure(result)) {
+            switch (status) {
+            case MlirTypeConverterConversionStatusSuccess:
+              return success();
+            case MlirTypeConverterConversionStatusFailure:
+              // Hard failure. Restore any types the callback appended (a
+              // non-succeeding conversion function must not mutate `results`)
+              // and fail the conversion without trying another function.
+              results.truncate(numPriorResults);
+              return failure();
+            case MlirTypeConverterConversionStatusDeclined:
               // The callback declined. Restore any types it appended so the
               // driver's "try the next conversion" invariant holds (a declining
               // conversion function must not mutate `results`).
               results.truncate(numPriorResults);
               return std::nullopt;
             }
-            return success();
+            llvm_unreachable("unknown MlirTypeConverterConversionStatus");
           });
 }
 
