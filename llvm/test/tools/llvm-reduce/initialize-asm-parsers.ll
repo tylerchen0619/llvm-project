@@ -2,7 +2,7 @@
 ; REQUIRES: x86-registered-target
 
 ; RUN: llvm-as %s -o %t.bc
-; RUN: llvm-reduce --test=false %t.bc
+; RUN: llvm-reduce --test=llvm-dis %t.bc
 
 target triple = "x86_64-grtev4-linux-gnu"
 
