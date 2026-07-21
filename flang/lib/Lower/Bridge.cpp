@@ -1782,10 +1782,29 @@ private:
     return false;
   }
 
+  /// Return \p eval.block, lazily allocating it in the current region if
+  /// it hasn't been created yet.  Branch consumers that jump to a
+  /// labeled or exit target must go through this helper rather than
+  /// reading eval.block directly, so they don't rely on a caller having
+  /// pre-allocated the block.  Some parent lowerings take over a
+  /// construct's body without invoking the wrap machinery that would
+  /// otherwise create nested blocks up front; in those cases the
+  /// consumer that needs the landing pad creates it on demand.
+  mlir::Block *getOrCreateEvalBlock(Fortran::lower::pft::Evaluation &eval) {
+    if (!eval.block) {
+      // Preserve the builder's insertion point: createBlock moves it to
+      // the newly created block, but we only want to give the eval a
+      // landing pad — the branch instruction still needs to be emitted
+      // at the current position.
+      mlir::OpBuilder::InsertionGuard guard(*builder);
+      eval.block = builder->createBlock(&builder->getRegion());
+    }
+    return eval.block;
+  }
+
   /// Generate a branch to \p targetEval after generating on-exit code for
   /// any enclosing construct scopes that are exited by taking the branch.
-  void
-  genConstructExitBranch(const Fortran::lower::pft::Evaluation &targetEval) {
+  void genConstructExitBranch(Fortran::lower::pft::Evaluation &targetEval) {
     Fortran::lower::pft::Evaluation *activeAncestor =
         getActiveAncestor(targetEval);
     for (auto it = activeConstructStack.rbegin(),
@@ -1795,7 +1814,7 @@ private:
         break;
       it->stmtCtx.finalizeAndKeep();
     }
-    genBranch(targetEval.block);
+    genBranch(getOrCreateEvalBlock(targetEval));
   }
 
   /// A construct contains nested evaluations. Some of these evaluations
@@ -1862,13 +1881,14 @@ private:
   void genMultiwayBranch(mlir::Value selector,
                          llvm::SmallVector<int64_t> valueList,
                          llvm::SmallVector<Fortran::parser::Label> labelList,
-                         const Fortran::lower::pft::Evaluation &defaultEval,
+                         Fortran::lower::pft::Evaluation &defaultEval,
                          mlir::Block *errorBlock = nullptr) {
     bool inArithmeticIfContext = valueList.empty();
     assert(((inArithmeticIfContext && labelList.size() == 2) ||
             (valueList.size() && labelList.size() == valueList.size())) &&
            "mismatched multiway branch targets");
-    mlir::Block *defaultBlock = errorBlock ? errorBlock : defaultEval.block;
+    mlir::Block *defaultBlock =
+        errorBlock ? errorBlock : getOrCreateEvalBlock(defaultEval);
     bool defaultHasExitCode = !errorBlock && hasExitCode(defaultEval);
     bool hasAnyExitCode = defaultHasExitCode;
     if (!hasAnyExitCode)
@@ -1884,10 +1904,9 @@ private:
       // Generate a SelectOp.
       llvm::SmallVector<mlir::Block *> blockList;
       for (auto label : labelList) {
-        mlir::Block *block =
-            label ? evalOfLabel(label).block : defaultEval.block;
-        assert(block && "missing multiway branch block");
-        blockList.push_back(block);
+        Fortran::lower::pft::Evaluation &targetEval =
+            label ? evalOfLabel(label) : defaultEval;
+        blockList.push_back(getOrCreateEvalBlock(targetEval));
       }
       blockList.push_back(defaultBlock);
       if (valueList[branchCount - 1] == 0) // Swap IO ERR and default blocks.
@@ -1934,7 +1953,7 @@ private:
           lastBranch && !defaultHasExitCode
               ? defaultBlock
               : builder->getBlock()->splitBlock(builder->getInsertionPoint());
-      const Fortran::lower::pft::Evaluation &targetEval =
+      Fortran::lower::pft::Evaluation &targetEval =
           label.value() ? evalOfLabel(label.value()) : defaultEval;
       if (hasExitCode(targetEval)) {
         mlir::Block *jumpBlock =
@@ -1943,7 +1962,7 @@ private:
         startBlock(jumpBlock);
         genConstructExitBranch(targetEval);
       } else {
-        genConditionalBranch(cond, targetEval.block, nextBlock);
+        genConditionalBranch(cond, getOrCreateEvalBlock(targetEval), nextBlock);
       }
       if (!lastBranch) {
         startBlock(nextBlock);
@@ -4182,7 +4201,8 @@ private:
     llvm::SmallVector<mlir::Attribute> attrList;
     llvm::SmallVector<mlir::Value> valueList;
     llvm::SmallVector<mlir::Block *> blockList;
-    mlir::Block *defaultBlock = parentConstruct->constructExit->block;
+    mlir::Block *defaultBlock =
+        getOrCreateEvalBlock(*parentConstruct->constructExit);
     using CaseValue = Fortran::parser::Scalar<Fortran::parser::ConstantExpr>;
     auto addValue = [&](const CaseValue &caseValue) {
       const Fortran::lower::SomeExpr *expr =
@@ -4200,19 +4220,19 @@ private:
     for (Fortran::lower::pft::Evaluation *e = eval.controlSuccessor; e;
          e = e->controlSuccessor) {
       const auto &caseStmt = e->getIf<Fortran::parser::CaseStmt>();
-      assert(e->block && "missing CaseStmt block");
+      mlir::Block *caseBlock = getOrCreateEvalBlock(*e);
       const auto &caseSelector =
           std::get<Fortran::parser::CaseSelector>(caseStmt->t);
       const auto *caseValueRangeList =
           std::get_if<std::list<Fortran::parser::CaseValueRange>>(
               &caseSelector.u);
       if (!caseValueRangeList) {
-        defaultBlock = e->block;
+        defaultBlock = caseBlock;
         continue;
       }
       for (const Fortran::parser::CaseValueRange &caseValueRange :
            *caseValueRangeList) {
-        blockList.push_back(e->block);
+        blockList.push_back(caseBlock);
         if (const auto *caseValue = std::get_if<CaseValue>(&caseValueRange.u)) {
           attrList.push_back(fir::PointIntervalAttr::get(context));
           addValue(*caseValue);
